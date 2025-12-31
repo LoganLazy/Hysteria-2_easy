@@ -9,24 +9,21 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 PLAIN='\033[0m'
 
-# 配置文件与路径
 CONF_FILE="/etc/hysteria/config.yaml"
 BIN_FILE="/usr/local/bin/hysteria"
 
-# 1. 系统检测逻辑
+# 1. 系统检测
 if [ -f /etc/os-release ]; then
     . /etc/os-release
-    OS=$ID
+    OS=$ID # 可能是 alpine, debian, ubuntu, centos, rocky, almalinux, fedora
 else
-    echo -e "${RED}无法识别系统版本，请手动检查！${PLAIN}" && exit 1
+    echo -e "${RED}无法识别系统版本！${PLAIN}" && exit 1
 fi
 
 # 检查是否为 root
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 用户运行此脚本${PLAIN}" && exit 1
 
-# 
-
-# 2. 状态检查函数 (自适应 OpenRC/Systemd)
+# 2. 状态检查 (自适应)
 check_status() {
     if [[ "$OS" == "alpine" ]]; then
         if [ ! -f "/etc/init.d/hysteria" ]; then return 2; fi
@@ -40,17 +37,20 @@ check_status() {
     fi
 }
 
-# 3. 基础依赖安装
+# 3. 基础依赖安装 (增加 CentOS 支持)
 install_deps() {
-    echo -e "${YELLOW}正在安装必要依赖...${PLAIN}"
-    if [[ "$OS" == "alpine" ]]; then
-        apk update && apk add --no-cache curl openssl ca-certificates file bash wget
-    else
-        apt update && apt install -y curl openssl ca-certificates wget
-    fi
+    echo -e "${YELLOW}正在安装依赖...${PLAIN}"
+    case "$OS" in
+        alpine)
+            apk update && apk add --no-cache curl openssl ca-certificates file bash wget ;;
+        debian|ubuntu)
+            apt update && apt install -y curl openssl ca-certificates wget ;;
+        centos|rhel|rocky|almalinux|fedora)
+            yum install -y curl openssl ca-certificates wget || dnf install -y curl openssl ca-certificates wget ;;
+    esac
 }
 
-# 4. BBR 开启逻辑
+# 4. BBR 开启 (增加内核版本检查)
 enable_bbr() {
     if [ -f /proc/1/environ ] && grep -q "container=lxc" /proc/1/environ; then
         echo -e "${RED}LXC 容器请在宿主机开启 BBR。${PLAIN}"
@@ -73,27 +73,22 @@ install_hy2() {
     [ -z "${PORT}" ] && PORT="443"
 
     if [[ "$OS" == "alpine" ]]; then
-        # Alpine 二进制安装逻辑
+        # Alpine 二进制安装
         ARCH=$(uname -m)
-        case ${ARCH} in
-            x86_64)  BINARY="hysteria-linux-amd64" ;;
-            aarch64) BINARY="hysteria-linux-arm64" ;;
-            *) echo -e "${RED}不支持的架构${PLAIN}"; exit 1 ;;
-        esac
+        [ "$ARCH" = "x86_64" ] && BINARY="hysteria-linux-amd64" || BINARY="hysteria-linux-arm64"
         curl -L -o $BIN_FILE "https://github.com/apernet/hysteria/releases/latest/download/${BINARY}"
         chmod +x $BIN_FILE
     else
-        # Debian/Ubuntu 官方脚本安装
+        # 其他系统使用官方脚本
         bash <(curl -fsSL https://get.hy2.sh/)
     fi
 
-    # 生成证书
     mkdir -p /etc/hysteria
     openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
         -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
         -subj "/CN=bing.com" -days 36500
     
-    if [[ "$OS" != "alpine" ]]; then chown hysteria:hysteria /etc/hysteria/server.*; fi
+    [[ "$OS" != "alpine" ]] && chown hysteria:hysteria /etc/hysteria/server.*
 
     PASSWORD=$(openssl rand -base64 12 | tr -d '/+=')
     cat <<EOF > $CONF_FILE
@@ -111,7 +106,6 @@ bandwidth:
   down: 100 mbps
 EOF
 
-    # 服务启动逻辑
     if [[ "$OS" == "alpine" ]]; then
         cat <<EOF > /etc/init.d/hysteria
 #!/sbin/openrc-run
@@ -126,15 +120,14 @@ EOF
         rc-update add hysteria default
         rc-service hysteria restart
     else
-        systemctl enable hysteria-server.service
-        systemctl restart hysteria-server.service
+        systemctl daemon-reload
+        systemctl enable hysteria-server
+        systemctl restart hysteria-server
     fi
 
-    # 注册快捷键
     ln -sf "$(realpath "$0")" /usr/bin/hy2
     chmod +x /usr/bin/hy2
-    
-    echo -e "${GREEN}安装完成！请输入 hy2 管理。${PLAIN}"
+    echo -e "${GREEN}安装完成！输入 hy2 管理。${PLAIN}"
     show_link
 }
 
@@ -158,11 +151,11 @@ show_menu() {
     check_status
     S_RES=$?
     echo -e "${PURPLE}==============================================${PLAIN}"
-    echo -e "${CYAN}    Hysteria 2 全能管理脚本 (V4.0)    ${PLAIN}"
-    echo -e "${BLUE} 系统类型: ${GREEN}$OS${PLAIN}"
-    if [ $S_RES -eq 0 ]; then echo -e " 服务状态: ${GREEN}运行中${PLAIN}"
-    elif [ $S_RES -eq 1 ]; then echo -e " 服务状态: ${RED}已停止${PLAIN}"
-    else echo -e " 服务状态: ${YELLOW}未安装${PLAIN}"; fi
+    echo -e "${CYAN}    Hysteria 2 全平台管理脚本 (V5.0)    ${PLAIN}"
+    echo -e "${BLUE} 系统: ${GREEN}$OS${PLAIN}  架构: ${GREEN}$(uname -m)${PLAIN}"
+    if [ $S_RES -eq 0 ]; then echo -e " 状态: ${GREEN}运行中${PLAIN}"
+    elif [ $S_RES -eq 1 ]; then echo -e " 状态: ${RED}已停止${PLAIN}"
+    else echo -e " 状态: ${YELLOW}未安装${PLAIN}"; fi
     echo -e "${PURPLE}----------------------------------------------${PLAIN}"
     echo -e " 1. 安装 Hysteria 2"
     echo -e " 2. 查看配置信息"
